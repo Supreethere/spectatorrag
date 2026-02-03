@@ -87,8 +87,7 @@ header {
   font-family: 'JetBrains Mono'; font-weight: 700; color: white; 
   display: flex; gap: 10px; align-items: center; letter-spacing: 1px;
 }
-/* Replaced icon style with img style in JS, but keeping basics here */
-.branding img { height: 24px; } 
+.branding img { height: 24px; width: auto; } 
 
 .status-group { display: flex; gap: 12px; }
 

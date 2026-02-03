@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, ChangeEvent } from 'react';
 
+// --- Types ---
 interface ChatMsg {
   role: 'sys' | 'usr';
   text: string;
@@ -13,7 +14,7 @@ interface HistoryItem {
 }
 
 export default function SpectatorConsole() {
-  // --- STATE ---
+  // --- State Management ---
   const [apiKey, setApiKey] = useState<string>('');
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<0 | 1>(0);
@@ -42,7 +43,7 @@ export default function SpectatorConsole() {
 
   const MODEL = 'gemini-2.5-flash';
 
-  // --- INIT ---
+  // --- Initialization ---
   useEffect(() => {
     let k = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
     if (!k) k = localStorage.getItem('spectator_key_v7_pro') || '';
@@ -54,10 +55,9 @@ export default function SpectatorConsole() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // --- GLOBAL CLICK HANDLER FOR TIMESTAMPS ---
+  // --- Click Handler for Timestamps ---
   const handleChatClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    // Check if clicked element or its parent is a timestamp link
     const link = target.classList.contains('ts-link') ? target : target.closest('.ts-link');
     
     if (link) {
@@ -69,24 +69,24 @@ export default function SpectatorConsole() {
     }
   };
 
-  // --- TEXT PARSER (TIMESTAMPS & THREATS) ---
+  // --- Text Parser (Threats & Timestamps) ---
   const formatText = (text: string) => {
-    // 1. Process Timestamps (MM:SS) -> Convert to clickable spans
+    // Timestamps
     let processed = text.replace(/(\d{1,2}):(\d{2})/g, (match, m, s) => {
       const sec = parseInt(m) * 60 + parseInt(s);
       return `<span class="ts-link" data-sec="${sec}"><i class="ph-bold ph-play-circle"></i> ${match}</span>`;
     });
 
-    // 2. Process Threats (Matches [THREAT: ...])
+    // Threats
     processed = processed.replace(/\[THREAT: (.*?)\]/g, '<span class="threat-alert"><i class="ph-bold ph-warning"></i> $1</span>');
 
-    // 3. Standard formatting
+    // Bold & Newlines
     processed = processed.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
     
     return processed;
   };
 
-  // --- HELPERS ---
+  // --- Helpers ---
   const addLog = (role: 'sys' | 'usr', text: string) => {
     setMessages(prev => [...prev, { role, text }]);
   };
@@ -117,7 +117,7 @@ export default function SpectatorConsole() {
     resetSession();
   };
 
-  // --- STAGE FILE ---
+  // --- Stage File ---
   const stageFile = (file: File) => {
     if (!file) return;
     resetSession();
@@ -135,32 +135,54 @@ export default function SpectatorConsole() {
     addLog('sys', `Data buffered [${(file.size / 1024 / 1024).toFixed(1)}MB]. Ready to Ingest.`);
   };
 
-  // --- FETCH NETWORK ---
+  // --- Fetch Network (THE BYPASS LOGIC) ---
   const fetchNet = async () => {
     const url = urlInputRef.current?.value;
     if (!url) return;
+
     setIsUploading(true);
-    setUploadBtnText("FETCHING...");
-    addLog('sys', 'Connecting to Stream Proxy...');
+    setUploadBtnText("RESOLVING...");
+    addLog('sys', 'Requesting stream resolution via tactical proxy...');
 
     try {
+      // 1. Get the direct link from our backend
       const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
-      if (!res.ok) throw new Error('Proxy failed. Check URL.');
-      const blob = await res.blob();
-      let type = blob.type;
-      if (!type || type === 'application/octet-stream') type = 'video/mp4';
-      const file = new File([blob], 'network_stream.mp4', { type });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Proxy failed to resolve URL.");
+      }
+
+      const directUrl = data.downloadUrl;
+      addLog('sys', 'Target acquired. Downloading bytes directly to browser...');
+
+      // 2. Browser fetches the bytes (Bypasses Vercel Server)
+      const videoRes = await fetch(directUrl);
+      
+      if (!videoRes.ok) {
+        throw new Error(`Source denied access (Status: ${videoRes.status})`);
+      }
+
+      const blob = await videoRes.blob();
+      
+      if (blob.size === 0) throw new Error("Received empty stream.");
+
+      // 3. Stage the downloaded blob
+      const file = new File([blob], 'captured_stream.mp4', { type: 'video/mp4' });
       stageFile(file);
-      addLog('sys', 'Stream captured successfully.');
+      
+      addLog('sys', `Stream successful [${(blob.size/1024/1024).toFixed(1)}MB].`);
+
     } catch (e: any) {
+      console.error(e);
       addLog('sys', `Network Error: ${e.message}`);
-      setUploadBtnText("FETCH ERROR");
+      setUploadBtnText("FETCH FAILED");
     } finally {
       setIsUploading(false);
     }
   };
 
-  // --- UPLOAD ---
+  // --- Upload to Gemini ---
   const uploadToGemini = async () => {
     if (!videoBlob || !apiKey) {
       if(!apiKey) setIsAuthOpen(true);
@@ -220,6 +242,8 @@ export default function SpectatorConsole() {
       setUploadBtnText('SYSTEM ACTIVE');
       
       setIsUploading(false);
+      
+      // Auto-trigger analysis
       const initialPrompt = modeRef.current?.value;
       if(initialPrompt) {
         await generate(initialPrompt, uri);
@@ -233,7 +257,7 @@ export default function SpectatorConsole() {
     }
   };
 
-  // --- GENERATE ---
+  // --- Generate Response ---
   const generate = async (text: string, overrideUri?: string) => {
     const activeUri = overrideUri || fileUri;
     if (!text || !activeUri) return;
@@ -291,10 +315,9 @@ export default function SpectatorConsole() {
     }
   };
 
-  // --- RENDER ---
+  // --- Render ---
   return (
     <>
-      {/* RESTORED ORB BACKGROUND ELEMENTS */}
       <div className="ambient-field">
         <div className="orb o1"></div>
         <div className="orb o2"></div>
@@ -320,8 +343,7 @@ export default function SpectatorConsole() {
       <div id="console-body">
         <header>
           <div className="branding">
-            {/* UPDATED LOGO */}
-            <img src="/logospectator.svg" alt="Spectator" />
+            <img src="/spectatorlogo.svg" alt="Spectator" />
             SPECTATOR PRO
           </div>
           <div className="status-group">
