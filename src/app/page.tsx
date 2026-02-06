@@ -2,10 +2,11 @@
 
 import React, { useState, useRef, useEffect, ChangeEvent } from 'react';
 
-// --- Types ---
+// --- TYPES ---
 interface ChatMsg {
   role: 'sys' | 'usr';
   text: string;
+  attachments?: string[]; // Array of base64 image strings
 }
 
 interface HistoryItem {
@@ -14,7 +15,7 @@ interface HistoryItem {
 }
 
 export default function SpectatorConsole() {
-  // --- State Management ---
+  // --- STATE ---
   const [apiKey, setApiKey] = useState<string>('');
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<0 | 1>(0);
@@ -40,10 +41,11 @@ export default function SpectatorConsole() {
   const urlInputRef = useRef<HTMLInputElement>(null);
   const userInRef = useRef<HTMLInputElement>(null);
   const modeRef = useRef<HTMLSelectElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const MODEL = 'gemini-2.5-flash';
 
-  // --- Initialization ---
+  // --- INIT ---
   useEffect(() => {
     let k = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
     if (!k) k = localStorage.getItem('spectator_key_v7_pro') || '';
@@ -55,9 +57,10 @@ export default function SpectatorConsole() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // --- Click Handler for Timestamps ---
+  // --- RESTORED: GLOBAL CLICK HANDLER FOR TIMESTAMPS ---
   const handleChatClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
+    // Check if clicked element or its parent is a timestamp link
     const link = target.classList.contains('ts-link') ? target : target.closest('.ts-link');
     
     if (link) {
@@ -69,26 +72,99 @@ export default function SpectatorConsole() {
     }
   };
 
-  // --- Text Parser (Threats & Timestamps) ---
+  // --- EVIDENCE CAPTURE ENGINE ---
+  const captureEvidence = async (timestampStr: string, isZoom: boolean): Promise<string | null> => {
+    if (!videoBlob) return null;
+
+    // Convert MM:SS to seconds
+    const [m, s] = timestampStr.split(':').map(Number);
+    const timeInSeconds = m * 60 + s;
+
+    return new Promise((resolve) => {
+      // Create a temporary video element to grab the frame without disrupting the main player
+      const tempVideo = document.createElement('video');
+      tempVideo.src = URL.createObjectURL(videoBlob);
+      tempVideo.currentTime = timeInSeconds;
+      tempVideo.muted = true;
+      
+      tempVideo.onseeked = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) { resolve(null); return; }
+        
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(null); return; }
+
+        canvas.width = tempVideo.videoWidth;
+        canvas.height = tempVideo.videoHeight;
+
+        // Draw the specific frame
+        ctx.drawImage(tempVideo, 0, 0, canvas.width, canvas.height);
+
+        if (isZoom) {
+          // Digital Zoom Logic: Crop the center 40% of the image (Simulating face zoom)
+          const zoomFactor = 0.4; // Crop to 40% size
+          const sw = canvas.width * zoomFactor;
+          const sh = canvas.height * zoomFactor;
+          const sx = (canvas.width - sw) / 2;
+          const sy = (canvas.height - sh) / 2;
+
+          // Create a temp canvas for the crop
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = canvas.width; 
+          tempCanvas.height = canvas.height;
+          const tempCtx = tempCanvas.getContext('2d');
+          
+          // Draw extracted crop scaled back up
+          tempCtx?.drawImage(canvas, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+          
+          // Add "Target" overlay
+          if (tempCtx) {
+            tempCtx.strokeStyle = 'red';
+            tempCtx.lineWidth = 5;
+            tempCtx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
+            tempCtx.fillStyle = 'red';
+            tempCtx.font = '30px monospace';
+            tempCtx.fillText(`ZOOM TARGET // ${timestampStr}`, 30, 60);
+          }
+          
+          resolve(tempCanvas.toDataURL('image/jpeg'));
+        } else {
+           // Standard full frame screenshot
+           ctx.strokeStyle = '#00f0ff';
+           ctx.lineWidth = 4;
+           ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+           resolve(canvas.toDataURL('image/jpeg'));
+        }
+      };
+
+      // Trigger the load
+      tempVideo.load();
+    });
+  };
+
+  // --- TEXT PARSER (TIMESTAMPS, THREATS & EVIDENCE) ---
   const formatText = (text: string) => {
-    // Timestamps
+    // 1. Process Timestamps (MM:SS)
     let processed = text.replace(/(\d{1,2}):(\d{2})/g, (match, m, s) => {
       const sec = parseInt(m) * 60 + parseInt(s);
       return `<span class="ts-link" data-sec="${sec}"><i class="ph-bold ph-play-circle"></i> ${match}</span>`;
     });
 
-    // Threats
+    // 2. Process Threats
     processed = processed.replace(/\[THREAT: (.*?)\]/g, '<span class="threat-alert"><i class="ph-bold ph-warning"></i> $1</span>');
 
-    // Bold & Newlines
+    // 3. Clean up the internal proof tags so they don't look messy in text
+    processed = processed.replace(/\[PROOF: .*?\]/g, '').replace(/\[ZOOM: .*?\]/g, '');
+
+    // 4. Standard formatting
     processed = processed.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
     
     return processed;
   };
 
-  // --- Helpers ---
-  const addLog = (role: 'sys' | 'usr', text: string) => {
-    setMessages(prev => [...prev, { role, text }]);
+  // --- HELPERS ---
+  const addLog = (role: 'sys' | 'usr', text: string, attachments?: string[]) => {
+    setMessages(prev => [...prev, { role, text, attachments }]);
   };
 
   const saveAuth = () => {
@@ -117,7 +193,7 @@ export default function SpectatorConsole() {
     resetSession();
   };
 
-  // --- Stage File ---
+  // --- STAGE FILE ---
   const stageFile = (file: File) => {
     if (!file) return;
     resetSession();
@@ -135,54 +211,32 @@ export default function SpectatorConsole() {
     addLog('sys', `Data buffered [${(file.size / 1024 / 1024).toFixed(1)}MB]. Ready to Ingest.`);
   };
 
-  // --- Fetch Network (THE BYPASS LOGIC) ---
+  // --- FETCH NETWORK ---
   const fetchNet = async () => {
     const url = urlInputRef.current?.value;
     if (!url) return;
-
     setIsUploading(true);
-    setUploadBtnText("RESOLVING...");
-    addLog('sys', 'Requesting stream resolution via tactical proxy...');
+    setUploadBtnText("FETCHING...");
+    addLog('sys', 'Connecting to Stream Proxy...');
 
     try {
-      // 1. Get the direct link from our backend
       const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Proxy failed to resolve URL.");
-      }
-
-      const directUrl = data.downloadUrl;
-      addLog('sys', 'Target acquired. Downloading bytes directly to browser...');
-
-      // 2. Browser fetches the bytes (Bypasses Vercel Server)
-      const videoRes = await fetch(directUrl);
-      
-      if (!videoRes.ok) {
-        throw new Error(`Source denied access (Status: ${videoRes.status})`);
-      }
-
-      const blob = await videoRes.blob();
-      
-      if (blob.size === 0) throw new Error("Received empty stream.");
-
-      // 3. Stage the downloaded blob
-      const file = new File([blob], 'captured_stream.mp4', { type: 'video/mp4' });
+      if (!res.ok) throw new Error('Proxy failed. Check URL or YT restrictions.');
+      const blob = await res.blob();
+      let type = blob.type;
+      if (!type || type === 'application/octet-stream') type = 'video/mp4';
+      const file = new File([blob], 'network_stream.mp4', { type });
       stageFile(file);
-      
-      addLog('sys', `Stream successful [${(blob.size/1024/1024).toFixed(1)}MB].`);
-
+      addLog('sys', 'Stream captured successfully.');
     } catch (e: any) {
-      console.error(e);
       addLog('sys', `Network Error: ${e.message}`);
-      setUploadBtnText("FETCH FAILED");
+      setUploadBtnText("FETCH ERROR");
     } finally {
       setIsUploading(false);
     }
   };
 
-  // --- Upload to Gemini ---
+  // --- UPLOAD ---
   const uploadToGemini = async () => {
     if (!videoBlob || !apiKey) {
       if(!apiKey) setIsAuthOpen(true);
@@ -242,8 +296,6 @@ export default function SpectatorConsole() {
       setUploadBtnText('SYSTEM ACTIVE');
       
       setIsUploading(false);
-      
-      // Auto-trigger analysis
       const initialPrompt = modeRef.current?.value;
       if(initialPrompt) {
         await generate(initialPrompt, uri);
@@ -257,7 +309,7 @@ export default function SpectatorConsole() {
     }
   };
 
-  // --- Generate Response ---
+  // --- GENERATE ---
   const generate = async (text: string, overrideUri?: string) => {
     const activeUri = overrideUri || fileUri;
     if (!text || !activeUri) return;
@@ -268,7 +320,23 @@ export default function SpectatorConsole() {
     setIsInferenceRunning(true);
 
     try {
-      const formattedPrompt = `${text} \n\nIMPORTANT OUTPUT RULES:\n1. Always provide timestamps for events in format MM:SS.\n2. CRITICAL: If you detect weapons, fire, fighting, theft, blood, or aggression, wrap the description in brackets like this: [THREAT: Gun Detected] or [THREAT: Physical Assault]. This enables the UI to highlight it in red.`;
+      // ENHANCED PROMPT FOR EVIDENCE GATHERING
+      const formattedPrompt = `
+        ROLE: Forensic Security Analyst.
+        TASK: ${text}
+        
+        CRITICAL OBSERVATION RULES:
+        1. THEFT & CONCEALMENT: Look closely for "snatch-and-grab", pickpocketing, shoplifting, or putting items in pockets/bags. 
+        2. ANTI-HALLUCINATION: Do NOT interpret rapid snatching, grabbing, or reaching motions as "high-fives", "handshakes", or friendly gestures. Scrutinize hand interactions. If ownership of an object changes rapidly, it is likely theft.
+        3. THREATS: If you detect weapons, fire, fighting, theft, robbery, blood, or aggression, wrap the description in brackets: [THREAT: Theft Detected] or [THREAT: Physical Assault].
+        4. TIMESTAMPS: Always provide timestamps for every event in format MM:SS.
+        
+        EVIDENCE PROTOCOL (IMPORTANT):
+        - If you identify a THREAT, THEFT, or SUSPICIOUS ACTIVITY, you MUST generate a snapshot command.
+        - To take a standard photo, output: [PROOF: MM:SS] 
+        - To ZOOM IN on a suspect's face or the stolen item, output: [ZOOM: MM:SS]
+        - Example: "Theft detected at 00:15 [THREAT: Phone Snatching]. [ZOOM: 00:15]"
+      `;
 
       const parts: any[] = [{ text: formattedPrompt }];
 
@@ -292,7 +360,21 @@ export default function SpectatorConsole() {
       if (data.error) throw new Error(data.error.message);
 
       const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "No Response";
-      addLog('sys', reply);
+      
+      // --- PROCESS EVIDENCE REQUESTS ---
+      const evidenceRegex = /\[(PROOF|ZOOM): (\d{1,2}:\d{2})\]/g;
+      const matches = [...reply.matchAll(evidenceRegex)];
+      
+      const newAttachments: string[] = [];
+
+      for (const match of matches) {
+        const type = match[1]; // PROOF or ZOOM
+        const ts = match[2];   // MM:SS
+        const img = await captureEvidence(ts, type === 'ZOOM');
+        if (img) newAttachments.push(img);
+      }
+
+      addLog('sys', reply, newAttachments.length > 0 ? newAttachments : undefined);
 
       setHistory((prev) => [
         ...prev,
@@ -315,9 +397,12 @@ export default function SpectatorConsole() {
     }
   };
 
-  // --- Render ---
+  // --- RENDER ---
   return (
     <>
+      {/* HIDDEN CANVAS FOR EVIDENCE PROCESSING */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+
       <div className="ambient-field">
         <div className="orb o1"></div>
         <div className="orb o2"></div>
@@ -343,7 +428,7 @@ export default function SpectatorConsole() {
       <div id="console-body">
         <header>
           <div className="branding">
-            <img src="/spectatorlogo.svg" alt="Spectator" />
+            <img src="/logospectator.svg" alt="Spectator" />
             SPECTATOR PRO
           </div>
           <div className="status-group">
@@ -402,8 +487,8 @@ export default function SpectatorConsole() {
 
             <div className="lbl" style={{ marginTop: '20px' }}>INFERENCE MODE</div>
             <select id="mode" ref={modeRef} disabled={isUploading || fileUri !== null}>
-              <option value="Timeline Log: Provide detailed timestamped chronological events.">Chronological Event Log</option>
-              <option value="Security Scan: Flag weapons, aggression, fire, or theft immediately.">Threat Detection Priority</option>
+              <option value="Timeline Log: Provide detailed timestamped chronological events. Focus on interactions.">Chronological Event Log</option>
+              <option value="Security Scan: Flag theft, pickpocketing, weapons, aggression, or fire immediately. Verify if 'friendly' gestures are actually theft.">Threat Detection Priority</option>
               <option value="OCR Scan: Extract all text, license plates, and signage numbers.">OCR Data Extraction</option>
               <option value="Crowd Ops: Count subjects and analyze crowd movement patterns.">Crowd Dynamics & Counting</option>
             </select>
@@ -443,6 +528,19 @@ export default function SpectatorConsole() {
                       __html: formatText(m.text) 
                     }}
                   />
+                  
+                  {/* DISPLAY CAPTURED EVIDENCE */}
+                  {m.attachments && m.attachments.length > 0 && (
+                    <div className="evidence-grid">
+                      {m.attachments.map((img, idx) => (
+                        <div key={idx} className="evidence-card">
+                           <div className="ev-tag">EVIDENCE-{idx + 1}</div>
+                           <img src={img} alt="Evidence Frame" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                 </div>
               ))}
               
@@ -479,6 +577,36 @@ export default function SpectatorConsole() {
           </div>
         </div>
       </div>
+      
+      {/* CSS For Evidence Grid */}
+      <style jsx>{`
+        .evidence-grid {
+          display: flex;
+          gap: 10px;
+          margin-top: 10px;
+          flex-wrap: wrap;
+        }
+        .evidence-card {
+          position: relative;
+          border: 1px solid var(--rose);
+          border-radius: 4px;
+          overflow: hidden;
+          width: 200px;
+        }
+        .evidence-card img {
+          width: 100%;
+          display: block;
+        }
+        .ev-tag {
+          position: absolute;
+          top: 0;
+          left: 0;
+          background: var(--rose);
+          color: white;
+          font-size: 0.6rem;
+          padding: 2px 6px;
+        }
+      `}</style>
     </>
   );
 }
