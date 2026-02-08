@@ -1,42 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import ytdl from '@distube/ytdl-core';
 
-export const runtime = 'nodejs'; // Required for stream handling
-export const maxDuration = 60; // Extend timeout for Vercel (Pro plan)
+export const runtime = 'nodejs'; 
+export const maxDuration = 60; 
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url');
   if (!url) return new NextResponse('Missing URL', { status: 400 });
 
   try {
-    // 1. Handle YouTube Links
     if (ytdl.validateURL(url)) {
-      
-      // Get Info first to sanitize filename
       const info = await ytdl.getBasicInfo(url, {
         requestOptions: {
           headers: {
-            // Spoof User Agent to look like a standard Mac Chrome browser
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
           }
         }
       });
       
       const title = info.videoDetails.title.replace(/[^a-zA-Z0-9]/g, '_');
-
-      // Create the stream with a specific buffer to prevent timeouts
       const videoStream = ytdl(url, { 
-        quality: '18', // 360p MP4 (Lowest reliable mp4 for AI analysis to save bandwidth)
-        requestOptions: {
-          headers: {
-             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          }
-        },
-        highWaterMark: 1 << 25, // Increase buffer size
+        quality: '18', 
+        highWaterMark: 1 << 25, 
       });
 
-      // Stream handling for Next.js App Router
       const stream = new ReadableStream({
         start(controller) {
           videoStream.on('data', (chunk) => controller.enqueue(chunk));
@@ -53,17 +40,13 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 2. Handle Direct MP4/File Links
+    // Direct File Logic
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Fetch failed: ${response.statusText}`);
+    if (!response.ok) throw new Error(`Source returned ${response.status}`);
     
-    // Check if it's actually a video
     const contentType = response.headers.get('content-type');
-    if (!contentType?.includes('video') && !contentType?.includes('octet-stream')) {
-        throw new Error('URL does not appear to be a video file.');
-    }
-
     const blob = await response.blob();
+    
     return new NextResponse(blob, {
       headers: { 
         'Content-Type': contentType || 'video/mp4',
@@ -73,6 +56,7 @@ export async function GET(req: NextRequest) {
 
   } catch (error: any) {
     console.error("Proxy Error:", error);
+    // Crucial: Return error as text so frontend doesn't try to parse as video
     return new NextResponse(`Proxy Error: ${error.message}`, { status: 500 });
   }
 }
